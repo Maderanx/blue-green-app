@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_PAT = 'dckr_pat_Xjc81YvcXUO6NiN3GYb6frXb8bA'  // Your Docker Hub PAT
-        DOCKERHUB_USERNAME = "maderanx"                        // Your Docker Hub username
+        DOCKERHUB_PAT = credentials('dockerhub-pat')  // Jenkins Secret Text ID
+        DOCKERHUB_USERNAME = "maderanx"               // Docker Hub username
         IMAGE = "bluegreen-node"
-        DOCKER_BUILDKIT = "0"                                   // Disable BuildKit
+        DOCKER_BUILDKIT = "0"                         // Disable BuildKit to avoid credential helper issues
     }
 
     stages {
@@ -19,7 +19,7 @@ pipeline {
         stage('Docker Login') {
             steps {
                 script {
-                    sh "/usr/local/bin/docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PAT}"
+                    sh "echo ${DOCKERHUB_PAT} | /usr/local/bin/docker login -u ${DOCKERHUB_USERNAME} --password-stdin"
                 }
             }
         }
@@ -44,7 +44,7 @@ pipeline {
         stage('Blue-Green Deployment') {
             steps {
                 script {
-                    // Detect currently active container (blue or green)
+                    // Detect currently active container
                     def active = sh(script: "curl -s http://localhost:8081 | grep -o 'blue\\|green' || echo 'none'", returnStdout: true).trim()
                     def newColor = (active == 'blue') ? 'green' : 'blue'
 
