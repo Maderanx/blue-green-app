@@ -2,11 +2,13 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds')
-        IMAGE = "maderanx/bluegreen-node"
+        DOCKERHUB_PAT = credentials('dockerhub-pat')  // Secret Text ID for your PAT
+        DOCKERHUB_USERNAME = "maderanx"              // Your Docker Hub username
+        IMAGE = "bluegreen-node"
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 git 'https://github.com/Maderanx/blue-green-app.git'
@@ -24,9 +26,12 @@ pipeline {
         stage('Push to Docker Hub') {
             steps {
                 script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-creds') {
-                        docker.image("${IMAGE}:${BUILD_NUMBER}").push()
-                    }
+                    // Login using Docker Hub PAT
+                    sh "docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PAT}"
+
+                    // Tag and push the image
+                    sh "docker tag ${IMAGE}:${BUILD_NUMBER} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                    sh "docker push ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
                 }
             }
         }
@@ -38,26 +43,36 @@ pipeline {
                     def active = sh(script: "curl -s http://localhost:8081 | grep -o 'blue\\|green' || echo 'none'", returnStdout: true).trim()
                     def newColor = (active == 'blue') ? 'green' : 'blue'
 
-                    echo "Active: ${active}, Deploying new version as: ${newColor}"
+                    echo "Active container: ${active}. Deploying new version as: ${newColor}"
 
-                    // Run new container
-                    sh "docker run -d -p ${newColor == 'blue' ? '3000' : '3001'}:3000 --name ${newColor} -e COLOR=${newColor} ${IMAGE}:${BUILD_NUMBER}"
+                    // Run the new container
+                    def hostPort = (newColor == 'blue') ? '3000' : '3001'
+                    sh "docker run -d -p ${hostPort}:3000 --name ${newColor} -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
 
-                    // Wait a few seconds for health check
+                    // Wait for the container to start
                     sleep 5
 
                     // Simple health check
-                    def health = sh(script: "curl -s http://localhost:${newColor == 'blue' ? '3000' : '3001'} | grep '${newColor}' || echo 'fail'", returnStdout: true).trim()
+                    def health = sh(script: "curl -s http://localhost:${hostPort} | grep '${newColor}' || echo 'fail'", returnStdout: true).trim()
 
                     if (health.contains(newColor)) {
                         echo "✅ ${newColor} is healthy. Switching Nginx traffic..."
-                        sh "sed -i '' 's/${active}/${newColor}/' nginx/nginx.conf"
+
+                        // Update nginx config to point to new container
+                        if (active != 'none') {
+                            sh "sed -i '' 's/${active}/${newColor}/' nginx/nginx.conf"
+                        } else {
+                            sh "sed -i '' 's/blue/${newColor}/' nginx/nginx.conf"
+                        }
+
+                        // Reload Nginx
                         sh "docker exec nginx nginx -s reload"
 
-                        // Stop old container
+                        // Stop old container if it exists
                         if (active != 'none') {
                             sh "docker stop ${active} && docker rm ${active}"
                         }
+
                     } else {
                         echo "❌ Deployment failed. Keeping ${active} live."
                         sh "docker stop ${newColor} && docker rm ${newColor}"
