@@ -2,9 +2,10 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_PAT = credentials('dockerhub-pat')  // Secret Text ID
-        DOCKERHUB_USERNAME = "maderanx"              // Your Docker Hub username
+        DOCKERHUB_PAT = 'dckr_pat_Xjc81YvcXUO6NiN3GYb6frXb8bA'  // Your Docker Hub PAT
+        DOCKERHUB_USERNAME = "maderanx"                        // Your Docker Hub username
         IMAGE = "bluegreen-node"
+        DOCKER_BUILDKIT = "0"                                   // Disable BuildKit
     }
 
     stages {
@@ -12,6 +13,14 @@ pipeline {
         stage('Checkout') {
             steps {
                 git 'https://github.com/Maderanx/blue-green-app.git'
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                script {
+                    sh "/usr/local/bin/docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PAT}"
+                }
             }
         }
 
@@ -26,10 +35,6 @@ pipeline {
         stage('Push to Docker Hub') {
             steps {
                 script {
-                    // Login using Docker Hub PAT
-                    sh "/usr/local/bin/docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PAT}"
-
-                    // Tag and push
                     sh "/usr/local/bin/docker tag ${IMAGE}:${BUILD_NUMBER} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
                     sh "/usr/local/bin/docker push ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
                 }
@@ -45,7 +50,7 @@ pipeline {
 
                     echo "Active container: ${active}. Deploying new version as: ${newColor}"
 
-                    // Run new container
+                    // Run the new container
                     def hostPort = (newColor == 'blue') ? '3000' : '3001'
                     sh "/usr/local/bin/docker run -d -p ${hostPort}:3000 --name ${newColor} -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
 
