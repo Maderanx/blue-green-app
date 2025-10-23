@@ -50,9 +50,10 @@ pipeline {
 
                     echo "Active container: ${active}. Deploying new version as: ${newColor}"
 
-                    // Remove old container if exists (running or stopped)
+                    // Remove old container with same name if exists
                     sh """
                     if /usr/local/bin/docker ps -a --format '{{.Names}}' | grep -w ${newColor}; then
+                        echo "Stopping and removing existing ${newColor} container..."
                         /usr/local/bin/docker stop ${newColor} || true
                         /usr/local/bin/docker rm ${newColor} || true
                     fi
@@ -71,10 +72,8 @@ pipeline {
                     if (health.contains(newColor)) {
                         echo "✅ ${newColor} is healthy. Switching Nginx traffic..."
 
-                        // Detect Nginx container dynamically
-                        //def nginxContainer = sh(script: "docker ps --filter 'ancestor=nginx' --format '{{.Names}}' | head -n1", returnStdout: true).trim()
+                        // Detect Nginx container
                         def nginxContainer = "nginx"
-
                         if (!nginxContainer) {
                             error("❌ Nginx container not found. Cannot switch traffic.")
                         }
@@ -89,14 +88,17 @@ pipeline {
                         // Reload Nginx
                         sh "/usr/local/bin/docker exec ${nginxContainer} nginx -s reload"
 
-                        // Stop old container
+                        // Stop and remove old active container automatically
                         if (active != 'none') {
-                            sh "/usr/local/bin/docker stop ${active} && /usr/local/bin/docker rm ${active}"
+                            echo "Stopping and removing old active container: ${active}"
+                            sh "/usr/local/bin/docker stop ${active} || true"
+                            sh "/usr/local/bin/docker rm ${active} || true"
                         }
 
                     } else {
                         echo "❌ Deployment failed. Keeping ${active} live."
-                        sh "/usr/local/bin/docker stop ${newColor} && /usr/local/bin/docker rm ${newColor}"
+                        sh "/usr/local/bin/docker stop ${newColor} || true"
+                        sh "/usr/local/bin/docker rm ${newColor} || true"
                         error("Deployment failed")
                     }
                 }
