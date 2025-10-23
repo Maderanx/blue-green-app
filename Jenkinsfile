@@ -72,7 +72,9 @@ pipeline {
                         echo "✅ ${newColor} is healthy. Switching Nginx traffic..."
 
                         // Detect Nginx container dynamically
-                        def nginxContainer = sh(script: "docker ps --filter 'ancestor=nginx' --format '{{.Names}}' | head -n1", returnStdout: true).trim()
+                        //def nginxContainer = sh(script: "docker ps --filter 'ancestor=nginx' --format '{{.Names}}' | head -n1", returnStdout: true).trim()
+                        def nginxContainer = "nginx"
+
                         if (!nginxContainer) {
                             error("❌ Nginx container not found. Cannot switch traffic.")
                         }
