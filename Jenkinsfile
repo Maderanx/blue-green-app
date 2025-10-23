@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_PAT = credentials('dockerhub-pat')  // Secret Text ID for your PAT
+        DOCKERHUB_PAT = credentials('dockerhub-pat')  // Secret Text ID
         DOCKERHUB_USERNAME = "maderanx"              // Your Docker Hub username
         IMAGE = "bluegreen-node"
     }
@@ -18,7 +18,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    docker.build("${IMAGE}:${BUILD_NUMBER}")
+                    sh "/usr/local/bin/docker build -t ${IMAGE}:${BUILD_NUMBER} ."
                 }
             }
         }
@@ -27,11 +27,11 @@ pipeline {
             steps {
                 script {
                     // Login using Docker Hub PAT
-                    sh "docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PAT}"
+                    sh "/usr/local/bin/docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PAT}"
 
-                    // Tag and push the image
-                    sh "docker tag ${IMAGE}:${BUILD_NUMBER} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
-                    sh "docker push ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                    // Tag and push
+                    sh "/usr/local/bin/docker tag ${IMAGE}:${BUILD_NUMBER} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                    sh "/usr/local/bin/docker push ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
                 }
             }
         }
@@ -45,20 +45,20 @@ pipeline {
 
                     echo "Active container: ${active}. Deploying new version as: ${newColor}"
 
-                    // Run the new container
+                    // Run new container
                     def hostPort = (newColor == 'blue') ? '3000' : '3001'
-                    sh "docker run -d -p ${hostPort}:3000 --name ${newColor} -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                    sh "/usr/local/bin/docker run -d -p ${hostPort}:3000 --name ${newColor} -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
 
-                    // Wait for the container to start
+                    // Wait for container to start
                     sleep 5
 
-                    // Simple health check
+                    // Health check
                     def health = sh(script: "curl -s http://localhost:${hostPort} | grep '${newColor}' || echo 'fail'", returnStdout: true).trim()
 
                     if (health.contains(newColor)) {
                         echo "✅ ${newColor} is healthy. Switching Nginx traffic..."
 
-                        // Update nginx config to point to new container
+                        // Update nginx config
                         if (active != 'none') {
                             sh "sed -i '' 's/${active}/${newColor}/' nginx/nginx.conf"
                         } else {
@@ -66,16 +66,16 @@ pipeline {
                         }
 
                         // Reload Nginx
-                        sh "docker exec nginx nginx -s reload"
+                        sh "/usr/local/bin/docker exec nginx nginx -s reload"
 
-                        // Stop old container if it exists
+                        // Stop old container
                         if (active != 'none') {
-                            sh "docker stop ${active} && docker rm ${active}"
+                            sh "/usr/local/bin/docker stop ${active} && /usr/local/bin/docker rm ${active}"
                         }
 
                     } else {
                         echo "❌ Deployment failed. Keeping ${active} live."
-                        sh "docker stop ${newColor} && docker rm ${newColor}"
+                        sh "/usr/local/bin/docker stop ${newColor} && /usr/local/bin/docker rm ${newColor}"
                         error("Deployment failed")
                     }
                 }
