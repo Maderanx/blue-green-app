@@ -5,7 +5,7 @@ pipeline {
         DOCKERHUB_PAT = credentials('dockerhub-pat')  // Jenkins Secret Text ID
         DOCKERHUB_USERNAME = "maderanx"               // Docker Hub username
         IMAGE = "bluegreen-node"
-        DOCKER_BUILDKIT = "0"                         // Disable BuildKit to avoid credential helper issues
+        DOCKER_BUILDKIT = "0"                         // Disable BuildKit
     }
 
     stages {
@@ -50,6 +50,14 @@ pipeline {
 
                     echo "Active container: ${active}. Deploying new version as: ${newColor}"
 
+                    // Remove old container if exists (running or stopped)
+                    sh """
+                    if /usr/local/bin/docker ps -a --format '{{.Names}}' | grep -w ${newColor}; then
+                        /usr/local/bin/docker stop ${newColor} || true
+                        /usr/local/bin/docker rm ${newColor} || true
+                    fi
+                    """
+
                     // Run the new container
                     def hostPort = (newColor == 'blue') ? '3000' : '3001'
                     sh "/usr/local/bin/docker run -d -p ${hostPort}:3000 --name ${newColor} -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
@@ -63,6 +71,12 @@ pipeline {
                     if (health.contains(newColor)) {
                         echo "✅ ${newColor} is healthy. Switching Nginx traffic..."
 
+                        // Detect Nginx container dynamically
+                        def nginxContainer = sh(script: "docker ps --filter 'ancestor=nginx' --format '{{.Names}}' | head -n1", returnStdout: true).trim()
+                        if (!nginxContainer) {
+                            error("❌ Nginx container not found. Cannot switch traffic.")
+                        }
+
                         // Update nginx config
                         if (active != 'none') {
                             sh "sed -i '' 's/${active}/${newColor}/' nginx/nginx.conf"
@@ -71,7 +85,7 @@ pipeline {
                         }
 
                         // Reload Nginx
-                        sh "/usr/local/bin/docker exec nginx nginx -s reload"
+                        sh "/usr/local/bin/docker exec ${nginxContainer} nginx -s reload"
 
                         // Stop old container
                         if (active != 'none') {
