@@ -77,7 +77,8 @@ pipeline {
                             echo "🚀 Starting Nginx container..."
                             sh """
                             /usr/local/bin/docker start nginx || \
-                            /usr/local/bin/docker run -d --name nginx -p 8081:80 -v \$(pwd)/nginx/nginx.conf:/etc/nginx/nginx.conf nginx:latest
+                            /usr/local/bin/docker run -d --name nginx -p 8081:80 -v /Users/madhavvarul/Library/CloudStorage/OneDrive-ShivNadarUniversity-Chennai/Desktop/blue-green-app/nginx/nginx.conf:/etc/nginx/nginx.conf nginx:latest
+    
                             """
                             sleep 3
                         }
