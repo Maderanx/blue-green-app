@@ -6,6 +6,8 @@ pipeline {
         DOCKERHUB_USERNAME = "maderanx"               // Docker Hub username
         IMAGE = "bluegreen-node"
         DOCKER_BUILDKIT = "0"                         // Disable BuildKit
+        PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        SHELL = "/bin/bash"
     }
 
     stages {
@@ -19,7 +21,11 @@ pipeline {
         stage('Docker Login') {
             steps {
                 script {
-                    sh "echo ${DOCKERHUB_PAT} | /usr/local/bin/docker login -u ${DOCKERHUB_USERNAME} --password-stdin"
+                    // Safe: No Groovy interpolation with credentials
+                    sh '''
+                        #!/bin/bash
+                        echo "$DOCKERHUB_PAT" | /usr/local/bin/docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+                    '''
                 }
             }
         }
@@ -27,7 +33,10 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    sh "/usr/local/bin/docker build -t ${IMAGE}:${BUILD_NUMBER} ."
+                    sh '''
+                        #!/bin/bash
+                        /usr/local/bin/docker build -t "${IMAGE}:${BUILD_NUMBER}" .
+                    '''
                 }
             }
         }
@@ -35,8 +44,11 @@ pipeline {
         stage('Push to Docker Hub') {
             steps {
                 script {
-                    sh "/usr/local/bin/docker tag ${IMAGE}:${BUILD_NUMBER} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
-                    sh "/usr/local/bin/docker push ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                    sh '''
+                        #!/bin/bash
+                        /usr/local/bin/docker tag "${IMAGE}:${BUILD_NUMBER}" "${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                        /usr/local/bin/docker push "${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                    '''
                 }
             }
         }
@@ -44,63 +56,58 @@ pipeline {
         stage('Blue-Green Deployment') {
             steps {
                 script {
-                    // Detect currently active container
-                    def active = sh(script: "curl -s http://localhost:8081 | grep -o 'blue\\|green' || echo 'none'", returnStdout: true).trim()
-                    def newColor = (active == 'blue') ? 'green' : 'blue'
+                    sh '''
+                        #!/bin/bash
 
-                    echo "Active container: ${active}. Deploying new version as: ${newColor}"
+                        active=$(curl -s http://localhost:8081 | grep -o 'blue\\|green' || echo 'none')
+                        newColor=$([ "$active" = "blue" ] && echo "green" || echo "blue")
 
-                    // Remove old container with same name if exists
-                    sh """
-                    if /usr/local/bin/docker ps -a --format '{{.Names}}' | grep -w ${newColor}; then
-                        echo "Stopping and removing existing ${newColor} container..."
-                        /usr/local/bin/docker stop ${newColor} || true
-                        /usr/local/bin/docker rm ${newColor} || true
-                    fi
-                    """
+                        echo "Active container: $active. Deploying new version as: $newColor"
 
-                    // Run the new container
-                    def hostPort = (newColor == 'blue') ? '3000' : '3001'
-                    sh "/usr/local/bin/docker run -d -p ${hostPort}:3000 --name ${newColor} -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                        # Stop and remove existing same-color container
+                        if /usr/local/bin/docker ps -a --format '{{.Names}}' | grep -w "$newColor"; then
+                            echo "Stopping and removing existing $newColor container..."
+                            /usr/local/bin/docker stop "$newColor" || true
+                            /usr/local/bin/docker rm "$newColor" || true
+                        fi
 
-                    // Wait for container to start
-                    sleep 5
+                        hostPort=$([ "$newColor" = "blue" ] && echo "3000" || echo "3001")
 
-                    // Health check
-                    def health = sh(script: "curl -s http://localhost:${hostPort} | grep '${newColor}' || echo 'fail'", returnStdout: true).trim()
+                        /usr/local/bin/docker run -d -p "$hostPort:3000" --name "$newColor" -e COLOR="$newColor" "${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
 
-                    if (health.contains(newColor)) {
-                        echo "✅ ${newColor} is healthy. Switching Nginx traffic..."
+                        sleep 5
 
-                        // Detect Nginx container
-                        def nginxContainer = "nginx"
-                        if (!nginxContainer) {
-                            error("❌ Nginx container not found. Cannot switch traffic.")
-                        }
+                        health=$(curl -s "http://localhost:$hostPort" | grep "$newColor" || echo "fail")
 
-                        // Update nginx config
-                        if (active != 'none') {
-                            sh "sed -i '' 's/${active}/${newColor}/' nginx/nginx.conf"
-                        } else {
-                            sh "sed -i '' 's/blue/${newColor}/' nginx/nginx.conf"
-                        }
+                        if echo "$health" | grep -q "$newColor"; then
+                            echo "✅ $newColor is healthy. Switching Nginx traffic..."
+                            nginxContainer="nginx"
 
-                        // Reload Nginx
-                        sh "/usr/local/bin/docker exec ${nginxContainer} nginx -s reload"
+                            if [ -z "$nginxContainer" ]; then
+                                echo "❌ Nginx container not found. Cannot switch traffic."
+                                exit 1
+                            fi
 
-                        // Stop and remove old active container automatically
-                        if (active != 'none') {
-                            echo "Stopping and removing old active container: ${active}"
-                            sh "/usr/local/bin/docker stop ${active} || true"
-                            sh "/usr/local/bin/docker rm ${active} || true"
-                        }
+                            if [ "$active" != "none" ]; then
+                                sed -i '' "s/$active/$newColor/" nginx/nginx.conf
+                            else
+                                sed -i '' "s/blue/$newColor/" nginx/nginx.conf
+                            fi
 
-                    } else {
-                        echo "❌ Deployment failed. Keeping ${active} live."
-                        sh "/usr/local/bin/docker stop ${newColor} || true"
-                        sh "/usr/local/bin/docker rm ${newColor} || true"
-                        error("Deployment failed")
-                    }
+                            /usr/local/bin/docker exec "$nginxContainer" nginx -s reload
+
+                            if [ "$active" != "none" ]; then
+                                echo "Stopping and removing old active container: $active"
+                                /usr/local/bin/docker stop "$active" || true
+                                /usr/local/bin/docker rm "$active" || true
+                            fi
+                        else
+                            echo "❌ Deployment failed. Keeping $active live."
+                            /usr/local/bin/docker stop "$newColor" || true
+                            /usr/local/bin/docker rm "$newColor" || true
+                            exit 1
+                        fi
+                    '''
                 }
             }
         }
