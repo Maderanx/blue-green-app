@@ -8,6 +8,8 @@ pipeline {
         DOCKER_BUILDKIT = "0"
         PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         SHELL = "/bin/bash"
+        NETWORK = "bluegreen-net"
+        NGINX_CONF_PATH = "/Users/madhavvarul/Library/CloudStorage/OneDrive-ShivNadarUniversity-Chennai/Desktop/blue-green-app/nginx/nginx.conf"
     }
 
     stages {
@@ -46,12 +48,22 @@ pipeline {
         stage('Blue-Green Deployment') {
             steps {
                 script {
+                    // Ensure the shared Docker network exists
+                    sh """
+                    if ! /usr/local/bin/docker network ls --format '{{.Name}}' | grep -w ${NETWORK}; then
+                        echo "🌐 Creating Docker network '${NETWORK}'..."
+                        /usr/local/bin/docker network create ${NETWORK}
+                    else
+                        echo "✅ Docker network '${NETWORK}' already exists."
+                    fi
+                    """
+
                     // Determine active color
                     def active = sh(script: "curl -s http://localhost:8081 | grep -o 'blue\\|green' || echo 'none'", returnStdout: true).trim()
                     def newColor = (active == 'blue') ? 'green' : 'blue'
                     echo "Active container: ${active}. Deploying new version as: ${newColor}"
 
-                    // Stop and remove old container of same color (if any)
+                    // Stop and remove old container of same color
                     sh """
                     if /usr/local/bin/docker ps -a --format '{{.Names}}' | grep -w ${newColor}; then
                         echo "🧹 Removing old ${newColor} container..."
@@ -60,30 +72,36 @@ pipeline {
                     fi
                     """
 
-                    // Deploy new version
+                    // Deploy new version attached to the shared network
                     def hostPort = (newColor == 'blue') ? '3000' : '3001'
-                    sh "/usr/local/bin/docker run -d -p ${hostPort}:3000 --name ${newColor} -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}"
+                    sh """
+                    echo "🚀 Starting ${newColor} container..."
+                    /usr/local/bin/docker run -d -p ${hostPort}:3000 \
+                        --name ${newColor} --network ${NETWORK} \
+                        -e COLOR=${newColor} ${DOCKERHUB_USERNAME}/${IMAGE}:${BUILD_NUMBER}
+                    """
 
-                    // Wait and health-check
+                    // Wait and health check
                     sleep 5
                     def health = sh(script: "curl -s http://localhost:${hostPort} | grep '${newColor}' || echo 'fail'", returnStdout: true).trim()
 
                     if (health.contains(newColor)) {
                         echo "✅ ${newColor} container healthy."
 
-                        // Ensure Nginx is running
+                        // Ensure Nginx is running on shared network
                         def nginxRunning = sh(script: "/usr/local/bin/docker ps --filter 'name=nginx' --format '{{.Names}}' | head -n1", returnStdout: true).trim()
                         if (!nginxRunning) {
                             echo "🚀 Starting Nginx container..."
                             sh """
                             /usr/local/bin/docker start nginx || \
-                            /usr/local/bin/docker run -d --name nginx -p 8081:80 -v /Users/madhavvarul/Library/CloudStorage/OneDrive-ShivNadarUniversity-Chennai/Desktop/blue-green-app/nginx/nginx.conf:/etc/nginx/nginx.conf nginx:latest
-    
+                            /usr/local/bin/docker run -d --name nginx --network ${NETWORK} \
+                                -p 8081:80 \
+                                -v ${NGINX_CONF_PATH}:/etc/nginx/nginx.conf nginx:latest
                             """
                             sleep 3
                         }
 
-                        // Update nginx.conf
+                        // Update nginx.conf to point to new color
                         echo "🔁 Updating nginx.conf to point to ${newColor}..."
                         sh """
                         if [ "${active}" != "none" ]; then
@@ -93,11 +111,11 @@ pipeline {
                         fi
                         """
 
-                        // Reload Nginx config
+                        // Reload Nginx
                         echo "♻️ Reloading Nginx..."
                         sh "/usr/local/bin/docker exec nginx nginx -s reload || echo 'Reload skipped (container just started)'"
 
-                        // Remove old active container
+                        // Stop old active container
                         if (active != 'none') {
                             sh "/usr/local/bin/docker stop ${active} || true"
                             sh "/usr/local/bin/docker rm ${active} || true"
